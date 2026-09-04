@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>botyara</title>
+    <link rel="icon" href="{{ url_for('favicon') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main>
+    <header>
+        <div>
+            <h1>botyara</h1>
+        </div>
+        <a class="button" href="{{ url_for('index', callback=selected, command=command) }}">Обновить</a>
+    </header>
+
+    {% for message in get_flashed_messages() %}
+    <p class="notice" role="status">{{ message }}</p>
+    {% endfor %}
+
+    <section>
+        <h2>Колбэки</h2>
+        <div class="table-wrap">
+            <table class="callbacks">
+                <thead><tr><th>ID</th><th>Callback UUID</th><th>Payload UUID</th><th>Состояние</th></tr></thead>
+                <tbody>
+                {% for callback in callbacks %}
+                <tr>
+                    <td>{{ callback.id }}</td>
+                    <td><code>{{ callback.uuid }}</code></td>
+                    <td><code>{{ callback.payload_uuid }}</code></td>
+                    <td class="{{ 'good' if callback.state == 'на связи' else 'muted' }}">{{ callback.state }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4">Колбэков пока нет. Запусти client.py в другом терминале.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section>
+        <h2>Новая задача</h2>
+        {% set available = callbacks | selectattr('state', 'equalto', 'на связи') | list %}
+        <form action="{{ url_for('ui_task') }}" method="post">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <label>Колбэк
+                <select name="callback_uuid" required {% if not available %}disabled{% endif %}>
+                    {% for callback in available %}
+                    <option value="{{ callback.uuid }}" {% if selected == callback.uuid %}selected{% endif %}>#{{ callback.id }} · {{ callback.uuid }} · {{ callback.state }}</option>
+                    {% else %}
+                    <option>Нет активных колбэков — запусти client.py</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Команда
+                <select name="command">
+                    {% for item in ('whoami', 'ip', 'exit') %}
+                    <option value="{{ item }}" {% if command == item %}selected{% endif %}>{{ item }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <button type="submit" {% if not available %}disabled{% endif %}>Отправить</button>
+        </form>
+    </section>
+
+    <section>
+        <h2>Задачи и результаты</h2>
+        {% set names = {'pending': 'в ожидании', 'sent': 'выдана', 'completed': 'выполнено'} %}
+        <div class="table-wrap">
+            <table class="tasks">
+                <thead><tr><th>ID</th><th>Колбэк</th><th>Команда</th><th>Статус</th><th>Результат</th></tr></thead>
+                <tbody>
+                {% for task in tasks %}
+                <tr>
+                    <td>{{ task.id }}</td>
+                    <td title="{{ task.callback_uuid }}"><code>#{{ task.callback_id }} · {{ task.callback_uuid[:8] }}…</code></td>
+                    <td><code>{{ task.command }}</code></td>
+                    <td class="{{ 'good' if task.status == 'completed' else 'waiting' }}">{{ names[task.status] }}</td>
+                    <td><pre>{{ task.result if task.result is not none else '—' }}</pre></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5">Задач пока нет. Выбери колбэк и команду выше.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+</body>
+</html>
