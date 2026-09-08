@@ -1,4 +1,5 @@
 import os
+import random
 import socket
 import subprocess
 import time
@@ -8,7 +9,14 @@ import requests
 
 SERVER_URL = os.environ.get("BOT_SERVER", "http://127.0.0.1:5000")
 PAYLOAD_UUID = os.environ.get("BOT_PAYLOAD", "550e8400-e29b-41d4-a716-446655440000")
-INTERVAL = 2
+SLEEP = float(os.environ.get("BOT_SLEEP", "5"))
+JITTER = float(os.environ.get("BOT_JITTER", "0.3"))
+
+
+def next_sleep(sleep=SLEEP, jitter=JITTER):
+    jitter = min(max(jitter, 0.0), 1.0)
+    delay = random.uniform(sleep * (1 - jitter), sleep * (1 + jitter))
+    return max(0.1, delay)
 
 
 def checkin():
@@ -86,7 +94,9 @@ def run(callback_uuid):
                 print("Сервер отказал:", error.response.text, flush=True)
                 return
             print("Связь пропала, попробую ещё:", error, flush=True)
-        time.sleep(INTERVAL)
+        delay = next_sleep()
+        print(f"Сплю {delay:.2f} сек", flush=True)
+        time.sleep(delay)
 
 
 if __name__ == "__main__":
