@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import socket
@@ -11,6 +12,29 @@ SERVER_URL = os.environ.get("BOT_SERVER", "http://127.0.0.1:5000")
 PAYLOAD_UUID = os.environ.get("BOT_PAYLOAD", "550e8400-e29b-41d4-a716-446655440000")
 SLEEP = float(os.environ.get("BOT_SLEEP", "5"))
 JITTER = float(os.environ.get("BOT_JITTER", "0.3"))
+
+
+def build_request(endpoint, profile, data):
+    method = profile["method"].upper()
+    transport = profile["transport"]
+    field = profile["field"]
+    if method not in ("GET", "POST"):
+        raise ValueError("Профиль поддерживает только GET и POST")
+    if transport not in ("json", "form", "query"):
+        raise ValueError("Неизвестный transport")
+    if not isinstance(field, str) or not field.strip():
+        raise ValueError("Нужно непустое имя поля")
+    if method == "GET" and transport != "query":
+        raise ValueError("Для GET используй query")
+    if transport != "json" and isinstance(data, (dict, list)):
+        data = json.dumps(data, ensure_ascii=False)
+    argument = {"json": "json", "form": "data", "query": "params"}[transport]
+    return {
+        "method": method,
+        "url": f"{SERVER_URL.rstrip('/')}/{endpoint.lstrip('/')}",
+        argument: {field: data},
+        "timeout": 5,
+    }
 
 
 def next_sleep(sleep=SLEEP, jitter=JITTER):
