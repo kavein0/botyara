@@ -4,19 +4,49 @@ from secrets import compare_digest, token_hex
 from uuid import uuid4
 from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import HTTPException
-from profiles import PROFILES, validate_profile
 from database import create_callback, create_payload, create_task, get_callback_id, get_next_task, get_payload, get_callback_payload_id, get_state, init_db, poll_task, save_result
-from profiles import PROFILES, validate_profile, parse_host_header, assemble_host_message
+import time
+from profiles import (
+    PROFILES, validate_profile,
+    parse_host_header, decode_host_data,
+    HOST_PART_SIZE, HOST_MAX_BYTES,
+)
 
 
 app = Flask(__name__)
 app.secret_key = token_hex(32)
 app.config.update(
     MAX_CONTENT_LENGTH=65536,
-    TRUSTED_HOSTS=["127.0.0.1", "localhost"],
     SESSION_COOKIE_SAMESITE="Strict",
-    SESSION_COOKIE_HTTPONLY=True
+    SESSION_COOKIE_HTTPONLY=True,
 )
+
+HOST_MESSAGES = {}
+
+
+def assemble_host_message(message_id, number, total, part):
+    max_parts = ((HOST_MAX_BYTES * 8 + 4) // 5 + HOST_PART_SIZE - 1) // HOST_PART_SIZE
+    if not 1 <= number <= total <= max_parts:
+        raise ValueError("Неверный номер части")
+    now = time.monotonic()
+    for key, value in list(HOST_MESSAGES.items()):
+        if now - value["updated"] > 60:
+            del HOST_MESSAGES[key]
+    if message_id not in HOST_MESSAGES and len(HOST_MESSAGES) >= 100:
+        raise ValueError("Слишком много незавершённых сообщений")
+    state = HOST_MESSAGES.setdefault(message_id, {
+        "total": total, "parts": {}, "updated": now,
+    })
+    old = state["parts"].get(number)
+    if state["total"] != total or (old is not None and old != part):
+        raise ValueError("Части противоречат друг другу")
+    state["parts"][number] = part
+    state["updated"] = now
+    if len(state["parts"]) != total:
+        return None
+    encoded = "".join(state["parts"][i] for i in range(1, total + 1))
+    del HOST_MESSAGES[message_id]
+    return decode_host_data(encoded)
 
 
 @app.errorhandler(HTTPException)
@@ -37,6 +67,7 @@ def read_profile_data(operation):
     rule = payload["profile"][operation]
     if request.method != rule["method"]:
         abort(405, "Метод не соответствует профилю")
+
     if rule["transport"] == "json":
         if not request.is_json:
             abort(415, "Профиль требует application/json")
@@ -47,11 +78,9 @@ def read_profile_data(operation):
     elif rule["transport"] == "form":
         if request.mimetype != "application/x-www-form-urlencoded":
             abort(415, "Профиль требует application/x-www-form-urlencoded")
-        source = request.form
-        value = source.get(rule["field"])
+        value = request.form.get(rule["field"])
     elif rule["transport"] == "query":
-        source = request.args
-        value = source.get(rule["field"])
+        value = request.args.get(rule["field"])
     elif rule["transport"] == "host":
         parsed = parse_host_header(request.headers.get("Host", ""))
         if parsed is None:
@@ -60,7 +89,8 @@ def read_profile_data(operation):
         try:
             assembled = assemble_host_message(message_id, number, total, part)
         except ValueError as error:
-            abort(400 if "противоречат" not in str(error) else 409, str(error))
+            code = 409 if "противоречат" in str(error) else 400
+            abort(code, str(error))
         if assembled is None:
             return {"__host_partial__": True, "received": number, "total": total}, payload["id"]
         value = assembled
@@ -72,33 +102,31 @@ def read_profile_data(operation):
     else:
         abort(400, "Неизвестный transport")
 
-    if rule["transport"] in ("json", "form", "query"):
-        if operation == "post_task":
-            if rule["transport"] not in ("json", "host"):
-                try:
-                    value = json.loads(value)
-                except (TypeError, ValueError):
-                    abort(400, "В поле результата нужна JSON-строка")
-            if not isinstance(value, dict):
-                abort(400, "Результат должен быть объектом")
-            callback_uuid = value.get("callback_uuid")
-        else:
-            if not isinstance(value, str) or not value:
-                abort(400, f"Нужно поле {rule['field']}")
-            callback_uuid = value
-        if operation == "checkin":
-            if value != payload_uuid:
-                abort(403, "Payload в поле и заголовке не совпадают")
-        else:
-            if not isinstance(callback_uuid, str) or not callback_uuid:
-                abort(400, "Нужен callback_uuid")
-            owner = get_callback_payload_id(callback_uuid)
-            if owner is None:
-                abort(404, "Callback не найден")
-            if owner != payload["id"]:
-                abort(403, "Callback относится к другому payload")
-        return value, payload["id"]
-
+    if operation == "post_task":
+        if rule["transport"] not in ("json", "host"):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                abort(400, "В поле результата нужна JSON-строка")
+        if not isinstance(value, dict):
+            abort(400, "Результат должен быть объектом")
+        callback_uuid = value.get("callback_uuid")
+    else:
+        if not isinstance(value, str) or not value:
+            abort(400, f"Нужно поле {rule['field']}")
+        callback_uuid = value
+    if operation == "checkin":
+        if value != payload_uuid:
+            abort(403, "Payload в поле и заголовке не совпадают")
+    else:
+        if not isinstance(callback_uuid, str) or not callback_uuid:
+            abort(400, "Нужен callback_uuid")
+        owner = get_callback_payload_id(callback_uuid)
+        if owner is None:
+            abort(404, "Callback не найден")
+        if owner != payload["id"]:
+            abort(403, "Callback относится к другому payload")
+    return value, payload["id"]
 
 def task_json(task):
     if task is None:

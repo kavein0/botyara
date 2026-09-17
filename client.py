@@ -104,13 +104,16 @@ def profile_request(endpoint, operation, data, config):
     for number, part in enumerate(parts, 1):
         host = f"m.{message_id}.{number}.{len(parts)}.{part}.{HOST_SUFFIX}"
         options = build_request(endpoint, rule, data, part_host=host)
-        options["headers"] = {**options.get("headers", {}), **headers_base}
-        response = requests.request(**options)
+        headers = {**options.get("headers", {}), **headers_base}
+        req = requests.Request(options["method"], options["url"], headers=headers)
+        prepared = req.prepare()
+        prepared.headers["Host"] = host
+        with requests.Session() as session:
+            response = session.send(prepared, timeout=options.get("timeout", 5))
         response.raise_for_status()
         result = response.json()
         if number < len(parts) and "received" not in result:
             raise ValueError("Сервер не принял промежуточную часть")
-    return result
 
 
 def checkin(config):

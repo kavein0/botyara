@@ -27,6 +27,7 @@ PROFILES = {"standard": STANDARD_PROFILE, "mixed": MIXED_PROFILE, "host": HOST_P
 HOST_SUFFIX = "demo.test"
 HOST_PART_SIZE = 50
 HOST_MAX_BYTES = 20000
+HOST_MESSAGES = {}
 
 def validate_profile(profile):
     if not isinstance(profile, dict):
