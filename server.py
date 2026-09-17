@@ -5,10 +5,9 @@ from uuid import uuid4
 from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import HTTPException
 from profiles import PROFILES, validate_profile
-from database import (
-    create_callback, create_payload, create_task, get_callback_id,
-    get_next_task, get_payload, get_callback_payload_id, get_state, init_db, poll_task, save_result
-)
+from database import create_callback, create_payload, create_task, get_callback_id, get_next_task, get_payload, get_callback_payload_id, get_state, init_db, poll_task, save_result
+from profiles import PROFILES, validate_profile, parse_host_header, assemble_host_message
+
 
 app = Flask(__name__)
 app.secret_key = token_hex(32)
@@ -42,40 +41,63 @@ def read_profile_data(operation):
         if not request.is_json:
             abort(415, "Профиль требует application/json")
         source = request.get_json(silent=True)
+        if source is None or not hasattr(source, "get"):
+            abort(400, "Нужен объект с полями запроса")
+        value = source.get(rule["field"])
     elif rule["transport"] == "form":
         if request.mimetype != "application/x-www-form-urlencoded":
             abort(415, "Профиль требует application/x-www-form-urlencoded")
         source = request.form
-    else:
+        value = source.get(rule["field"])
+    elif rule["transport"] == "query":
         source = request.args
-    if source is None or not hasattr(source, "get"):
-        abort(400, "Нужен объект с полями запроса")
-    value = source.get(rule["field"])
-    if operation == "post_task":
-        if rule["transport"] != "json":
+        value = source.get(rule["field"])
+    elif rule["transport"] == "host":
+        parsed = parse_host_header(request.headers.get("Host", ""))
+        if parsed is None:
+            abort(400, "Неверный Host")
+        message_id, number, total, part = parsed
+        try:
+            assembled = assemble_host_message(message_id, number, total, part)
+        except ValueError as error:
+            abort(400 if "противоречат" not in str(error) else 409, str(error))
+        if assembled is None:
+            return {"__host_partial__": True, "received": number, "total": total}, payload["id"]
+        value = assembled
+        if operation == "post_task":
             try:
                 value = json.loads(value)
             except (TypeError, ValueError):
-                abort(400, "В поле результата нужна JSON-строка")
-        if not isinstance(value, dict):
-            abort(400, "Результат должен быть объектом")
-        callback_uuid = value.get("callback_uuid")
+                abort(400, "В Host нужна JSON-строка результата")
     else:
-        if not isinstance(value, str) or not value:
-            abort(400, f"Нужно поле {rule['field']}")
-        callback_uuid = value
-    if operation == "checkin":
-        if value != payload_uuid:
-            abort(403, "Payload в поле и заголовке не совпадают")
-    else:
-        if not isinstance(callback_uuid, str) or not callback_uuid:
-            abort(400, "Нужен callback_uuid")
-        owner = get_callback_payload_id(callback_uuid)
-        if owner is None:
-            abort(404, "Callback не найден")
-        if owner != payload["id"]:
-            abort(403, "Callback относится к другому payload")
-    return value, payload["id"]
+        abort(400, "Неизвестный transport")
+
+    if rule["transport"] in ("json", "form", "query"):
+        if operation == "post_task":
+            if rule["transport"] not in ("json", "host"):
+                try:
+                    value = json.loads(value)
+                except (TypeError, ValueError):
+                    abort(400, "В поле результата нужна JSON-строка")
+            if not isinstance(value, dict):
+                abort(400, "Результат должен быть объектом")
+            callback_uuid = value.get("callback_uuid")
+        else:
+            if not isinstance(value, str) or not value:
+                abort(400, f"Нужно поле {rule['field']}")
+            callback_uuid = value
+        if operation == "checkin":
+            if value != payload_uuid:
+                abort(403, "Payload в поле и заголовке не совпадают")
+        else:
+            if not isinstance(callback_uuid, str) or not callback_uuid:
+                abort(400, "Нужен callback_uuid")
+            owner = get_callback_payload_id(callback_uuid)
+            if owner is None:
+                abort(404, "Callback не найден")
+            if owner != payload["id"]:
+                abort(403, "Callback относится к другому payload")
+        return value, payload["id"]
 
 
 def task_json(task):
@@ -112,7 +134,9 @@ def favicon():
 
 @app.route("/checkin", methods=["GET", "POST"])
 def checkin():
-    _, payload_id = read_profile_data("checkin")
+    value, payload_id = read_profile_data("checkin")
+    if isinstance(value, dict) and value.get("__host_partial__"):
+        return {"received": value["received"], "total": value["total"]}
     callback_uuid = str(uuid4())
     create_callback(callback_uuid, payload_id)
     return {"callback_uuid": callback_uuid}, 201
@@ -154,6 +178,8 @@ def next_task(callback_uuid):
 @app.route("/poll", methods=["GET", "POST"])
 def poll():
     callback_uuid, _ = read_profile_data("get_task")
+    if isinstance(callback_uuid, dict) and callback_uuid.get("__host_partial__"):
+        return {"received": callback_uuid["received"], "total": callback_uuid["total"]}
     try:
         task = poll_task(callback_uuid)
     except LookupError as error:
@@ -166,6 +192,8 @@ def poll():
 @app.route("/results", methods=["GET", "POST"])
 def results():
     data, _ = read_profile_data("post_task")
+    if isinstance(data, dict) and data.get("__host_partial__"):
+        return {"received": data["received"], "total": data["total"]}
     if not isinstance(data.get("callback_uuid"), str) or type(data.get("task_id")) is not int:
         return {"error": "Нужны callback_uuid и целый task_id"}, 400
     result = data.get("result")

