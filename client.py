@@ -114,6 +114,7 @@ def profile_request(endpoint, operation, data, config):
         result = response.json()
         if number < len(parts) and "received" not in result:
             raise ValueError("Сервер не принял промежуточную часть")
+    return result
 
 
 def checkin(config):
