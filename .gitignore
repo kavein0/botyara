@@ -11,3 +11,10 @@ __pycache__/
 *.log
 payload-*.json
 demo-output/
+clients/cpp/build/
+clients/go/build/
+clients/rust/target/
+clients/dotnet/bin/
+clients/dotnet/obj/
+clients/dotnet/publish/
+clients/study/
