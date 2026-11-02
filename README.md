@@ -211,6 +211,9 @@ POST /tasks принимает JSON:
 
 ## Структура проекта
 
+- clients/dotnet/ — Windows-клиент под .NET Framework 4.0;
+- clients/rustclr-loader/ — Windows x64-лоудер со встроенным C#-клиентом;
+  [сборка, запуск и проверки](clients/rustclr-loader/README.md);
 - server.py — HTTP API и веб-панель;
 - client.py — конфигурация клиента, запросы и выполнение задач;
 - database.py — схема SQLite и операции с данными;

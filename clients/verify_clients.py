@@ -22,15 +22,13 @@ import socket as socket_module
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DOTNET_PUBLISHED = ROOT / "clients/dotnet/publish/BotyaraClient.exe"
 CLIENTS = {
     "powershell": [os.environ.get("BOT_TEST_POWERSHELL", "pwsh"), "-NoProfile", "-File", str(ROOT / "clients/powershell/client.ps1")],
     "go": [str(ROOT / "clients/go/build/botyara-go.exe")],
     "rust": [str(ROOT / "clients/rust/target/release/botyara-rust.exe")],
     "cpp": [str(ROOT / "clients/cpp/build/botyara-cpp.exe")],
     "dotnet": ([os.environ["BOT_TEST_DOTNET_EXE"]] if os.environ.get("BOT_TEST_DOTNET_EXE") else
-               [str(DOTNET_PUBLISHED)] if DOTNET_PUBLISHED.exists() else
-               [os.environ.get("BOT_TEST_DOTNET", "dotnet"), str(ROOT / "clients/dotnet/bin/Release/net10.0/BotyaraClient.dll")]),
+               [str(ROOT / "clients/dotnet/bin/Release/net40/BotyaraClient.exe")]),
 }
 
 
@@ -49,7 +47,7 @@ def until(predicate, timeout, label):
     raise TimeoutError(label)
 
 
-def run_one(name, profile, base, directory):
+def run_one(name, profile, base, directory, cwd=None):
     config = directory / f"{name}-{profile}.json"
     if profile == "custom" and not config.exists():
         rules = {
@@ -63,10 +61,11 @@ def run_one(name, profile, base, directory):
     env = os.environ.copy()
     env.update(BOT_SERVER=base, BOT_PROFILE="standard" if profile == "custom" else profile,
                BOT_CONFIG=str(config), BOT_SLEEP="0.1", BOT_JITTER="0")
-    process = subprocess.Popen(CLIENTS[name], cwd=ROOT, env=env, stdout=subprocess.PIPE,
+    process = subprocess.Popen(CLIENTS[name], cwd=cwd or ROOT, env=env, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
     output = queue.Queue()
-    threading.Thread(target=lines_from, args=(process, output), daemon=True).start()
+    reader = threading.Thread(target=lines_from, args=(process, output), daemon=True)
+    reader.start()
     log = []
     try:
         def callback_line():
@@ -108,8 +107,13 @@ def run_one(name, profile, base, directory):
             if os.environ.get("BOT_TEST_VERBOSE") and command == "ip":
                 print(ascii(result))
         process.wait(timeout=5)
+        reader.join(timeout=5)
+        if reader.is_alive():
+            raise RuntimeError("client output reader did not finish")
         if process.returncode != 0:
             raise RuntimeError(f"client exited {process.returncode}: " + " | ".join(log))
+        while not output.empty(): log.append(output.get_nowait())
+        return log
     except Exception:
         while not output.empty(): log.append(output.get_nowait())
         print(f"LOG {name}/{profile}: " + " | ".join(log[-20:]), file=sys.stderr)

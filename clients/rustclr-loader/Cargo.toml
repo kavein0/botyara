@@ -1,0 +1,17 @@
+[package]
+name = "botyara-loader"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[[bin]]
+name = "Loader"
+path = "src/main.rs"
+
+[dependencies]
+rustclr = { git = "https://github.com/joaoviictorti/rustclr", rev = "9bdc8ef9bd0e7a6e4739a0b67d2c62d2933df90c" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
