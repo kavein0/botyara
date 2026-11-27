@@ -2,6 +2,8 @@
 
 Windows x64-лоудер с одним встроенным managed EXE под .NET Framework 4.0.
 Готовый файл: `dist/Loader.exe`. Конфиги создаются в текущем рабочем каталоге.
+Скачать лоудер и самостоятельный C#-клиент можно из
+[последнего релиза](https://github.com/kavein0/botyara/releases/latest).
 Для запуска нужен установленный совместимый **полный .NET Framework** (включая
 System.Web.Extensions); .NET 10 не заменяет Framework. MSVC CRT связан статически.
 Проверенная конфигурация выполнения: Framework 4.8.1 (Release 533509).
@@ -36,17 +38,24 @@ include_bytes! встраивает его в Loader. После сборки в
 
 ## Запуск
 
-Сначала запустите сервер проекта. Случайный профиль при каждом запуске:
+Для клиентской части достаточно скопировать `Loader.exe` в папку с правом
+записи. На Windows x64 с полным .NET Framework можно открыть файл двойным
+щелчком. Python, .NET SDK, Rust, предварительный JSON и переменные `BOT_*` для
+запуска клиента не нужны. Клиент по умолчанию подключается к серверу Botyara
+по адресу `http://127.0.0.1:5000`. Сервер запускается отдельно.
+
+Из корня репозитория:
 
 ```powershell
-Remove-Item Env:BOT_PROFILE, Env:BOT_CONFIG -ErrorAction SilentlyContinue
 .\clients\rustclr-loader\dist\Loader.exe
 ```
 
-Выбор равновероятен между standard, mixed и host и происходит один раз перед
-запуском CLR. Используется Windows BCryptGenRandom с отбрасыванием смещения
-при переводе случайного байта в индекс. Сохраняются раздельные файлы
-payload-standard.json, payload-mixed.json, payload-host.json.
+По умолчанию лоудер выбирает один из трёх профилей с равной вероятностью и
+передаёт его имя через `with_args` в `Main(string[] args)`. Правила `standard`,
+`mixed` и `host` включены в C#-сборку внутри EXE. При первой регистрации клиент
+отправляет серверу готовый объект правил и получает UUID. Затем создаёт
+соответствующий файл `payload-standard.json`, `payload-mixed.json` или
+`payload-host.json`.
 
 Явные настройки:
 
@@ -68,9 +77,8 @@ BOT_SLEEP и BOT_JITTER сохраняют прежний смысл.
 
 Сообщение Profile selection сообщает источник выбора и запрошенный профиль;
 Effective profile сообщает фактические правила после загрузки конфига.
-Вывод клиента идёт непосредственно в консоль. Лоудер использует только
-with_runtime_version(RuntimeVersion::V4); захват вывода, патч Exit и аргументы
-не требуются. Ошибка запуска или клиента возвращает ненулевой код процесса.
+Вывод клиента идёт непосредственно в консоль. Ошибка запуска или клиента
+возвращает ненулевой код процесса.
 
 ## Проверки
 
@@ -82,13 +90,17 @@ $env:BOT_TEST_DOTNET_EXE = (Resolve-Path .\clients\dotnet\bin\Release\net40\Boty
 $env:BOT_TEST_DOTNET_EXE = (Resolve-Path .\clients\rustclr-loader\dist\Loader.exe).Path
 .\.venv\Scripts\python.exe clients/verify_clients.py --client dotnet --reuse
 .\.venv\Scripts\python.exe clients/rustclr-loader/verify_loader.py
+.\.venv\Scripts\python.exe clients/rustclr-loader/verify_loader.py --default-port
 ```
 
 Первый EXE можно отдельно собрать `dotnet build clients/dotnet/BotyaraClient.csproj -c Release`.
-Последний скрипт проверяет единственный Loader.exe в чистом временном каталоге,
+`verify_loader.py` проверяет единственный Loader.exe в чистом временном каталоге,
 все четыре профиля и команды, неизменность повторно используемых конфигов,
 приоритет настроек, фактические правила custom, ошибки конфига, случайные запуски,
 загрузку Framework64/CLR в процессе и отсутствие отдельного процесса клиента.
+Тестовый сервер принимает объект правил и для встроенных профилей возвращает
+только UUID. Режим `--default-port` требует свободный порт 5000 и проверяет
+запуск без переменных `BOT_*` и со стандартным системным `PATH`.
 Сервер и SQLite изолированы. Для standalone net40 и Loader также моделируются
 503 до сохранения и после сохранения каждого результата: клиент повторяет
 результат, не выполняя задачу заново, и подтверждает exit перед завершением.

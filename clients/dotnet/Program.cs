@@ -35,22 +35,50 @@ sealed class Pending
 }
 sealed class Client
 {
+    private static readonly Dictionary<string, Dictionary<string, Rule>> BuiltInProfiles =
+        new Dictionary<string, Dictionary<string, Rule>>
+        {
+            { "standard", CreateProfile(
+                new Rule { method = "POST", transport = "json", field = "payload_uuid" },
+                new Rule { method = "POST", transport = "json", field = "callback_uuid" },
+                new Rule { method = "POST", transport = "json", field = "data" }) },
+            { "mixed", CreateProfile(
+                new Rule { method = "GET", transport = "query", field = "id" },
+                new Rule { method = "POST", transport = "form", field = "cb" },
+                new Rule { method = "POST", transport = "form", field = "data" }) },
+            { "host", CreateProfile(
+                new Rule { method = "POST", transport = "host", field = "payload_uuid" },
+                new Rule { method = "POST", transport = "host", field = "callback_uuid" },
+                new Rule { method = "POST", transport = "host", field = "data" }) },
+        };
+
     private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 1048576 };
     private readonly Random random = new Random();
     private readonly string server = Environment.GetEnvironmentVariable("BOT_SERVER") ?? "http://127.0.0.1:5000";
-    private readonly string profile = Environment.GetEnvironmentVariable("BOT_PROFILE") ?? "standard";
+    private readonly Dictionary<string, Rule> builtInRules;
     private readonly string path;
     private readonly double sleep;
     private readonly double jitter;
 
-    public Client()
+    public Client(string requestedProfile)
     {
+        string profile = requestedProfile ?? Environment.GetEnvironmentVariable("BOT_PROFILE") ?? "standard";
         path = Environment.GetEnvironmentVariable("BOT_CONFIG") ?? "payload-" + profile + ".json";
         sleep = double.Parse(Environment.GetEnvironmentVariable("BOT_SLEEP") ?? "5", CultureInfo.InvariantCulture);
         double j = double.Parse(Environment.GetEnvironmentVariable("BOT_JITTER") ?? "0.3", CultureInfo.InvariantCulture);
         jitter = Math.Max(0, Math.Min(1, j));
-        if ((profile != "standard" && profile != "mixed" && profile != "host") || sleep <= 0 || double.IsNaN(sleep) || double.IsInfinity(sleep) || double.IsNaN(j))
+        if (!BuiltInProfiles.TryGetValue(profile, out builtInRules) || sleep <= 0 || double.IsNaN(sleep) || double.IsInfinity(sleep) || double.IsNaN(j))
             throw new ArgumentException("Invalid BOT_PROFILE, BOT_SLEEP or BOT_JITTER");
+    }
+
+    private static Dictionary<string, Rule> CreateProfile(Rule checkin, Rule getTask, Rule postTask)
+    {
+        return new Dictionary<string, Rule>
+        {
+            { "checkin", checkin },
+            { "get_task", getTask },
+            { "post_task", postTask },
+        };
     }
     private Dictionary<string, object> Send(string method, string endpoint, string transport, string field, object value, string payload = "", string host = "")
     {
@@ -153,9 +181,16 @@ sealed class Client
         }
         else
         {
-            config = json.ConvertToType<Config>(Send("POST", "payloads", "json", "profile", profile));
-            if (config == null) throw new FormatException("Invalid payload response");
-            config.server_url = server;
+            var response = Send("POST", "payloads", "json", "profile", builtInRules);
+            object uuidValue;
+            if (!response.TryGetValue("payload_uuid", out uuidValue))
+                throw new FormatException("Missing payload UUID");
+            config = new Config
+            {
+                payload_uuid = uuidValue as string,
+                profile = builtInRules,
+                server_url = server,
+            };
         }
         Guid uuid;
         if (!Guid.TryParse(config.payload_uuid, out uuid)) throw new FormatException("Invalid payload UUID");
@@ -179,21 +214,23 @@ sealed class Client
     }
     private static string ProfileName(Dictionary<string, Rule> rules)
     {
-        string[] operations = { "checkin", "get_task", "post_task" };
-        string[][] definitions = {
-            new[] { "standard", "POST/json/payload_uuid", "POST/json/callback_uuid", "POST/json/data" },
-            new[] { "mixed", "GET/query/id", "POST/form/cb", "POST/form/data" },
-            new[] { "host", "POST/host/payload_uuid", "POST/host/callback_uuid", "POST/host/data" }
-        };
-        foreach (var definition in definitions)
+        foreach (var profile in BuiltInProfiles)
         {
-            bool matches = rules.Count == 3;
-            for (int i = 0; i < operations.Length; i++)
+            if (rules.Count != profile.Value.Count) continue;
+            bool matches = true;
+            foreach (var operation in profile.Value)
             {
-                Rule rule = rules[operations[i]];
-                matches &= rule.method + "/" + rule.transport + "/" + rule.field == definition[i + 1];
+                Rule rule;
+                if (!rules.TryGetValue(operation.Key, out rule) ||
+                    rule.method != operation.Value.method ||
+                    rule.transport != operation.Value.transport ||
+                    rule.field != operation.Value.field)
+                {
+                    matches = false;
+                    break;
+                }
             }
-            if (matches) return definition[0];
+            if (matches) return profile.Key;
         }
         return "custom";
     }
@@ -271,10 +308,14 @@ sealed class Client
 }
 static class Program
 {
-    static void Main()
+    static void Main(string[] args)
     {
         Console.OutputEncoding = new UTF8Encoding(false);
-        try { new Client().Run(); }
+        try
+        {
+            if (args.Length > 1) throw new ArgumentException("Expected at most one profile argument");
+            new Client(args.Length == 1 ? args[0] : null).Run();
+        }
         catch (Exception error) { Console.Error.WriteLine(error.Message); Environment.Exit(1); }
     }
 }

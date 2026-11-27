@@ -32,6 +32,10 @@ def serve():
 
     @server.app.before_request
     def fail_before_save():
+        if request.path == "/payloads":
+            profile = (request.get_json(silent=True) or {}).get("profile")
+            if not isinstance(profile, dict):
+                return {"error": "test: expected profile rules from the client"}, 400
         if enabled[0] and request.path == "/results":
             data = (request.get_json(silent=True) or {}).get("data", {})
             key = data.get("task_id")
@@ -41,6 +45,10 @@ def serve():
 
     @server.app.after_request
     def fail_after_save(response):
+        if request.path == "/payloads" and response.status_code == 201:
+            reply = response.get_json()
+            if reply["profile"] in server.PROFILES.values():
+                return server.app.make_response(({"payload_uuid": reply["payload_uuid"]}, 201))
         if enabled[0] and request.path == "/results" and response.status_code == 200:
             data = (request.get_json(silent=True) or {}).get("data", {})
             key = data.get("task_id")
@@ -52,11 +60,13 @@ def serve():
     server.app.run(host="127.0.0.1", port=int(os.environ["BOT_PORT"]))
 
 
-def launch_case(exe, base, directory, profile=None, config=None, expected=None):
-    env = os.environ.copy()
-    for key in ("BOT_PROFILE", "BOT_CONFIG"):
-        env.pop(key, None)
-    env.update(BOT_SERVER=base, BOT_SLEEP="0.1", BOT_JITTER="0")
+def launch_case(exe, base, directory, profile=None, config=None, expected=None, use_defaults=False):
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("BOT_")}
+    if use_defaults:
+        env = {key: value for key, value in env.items() if not key.upper().startswith(("DOTNET_", "COMPLUS_"))}
+        env["PATH"] = str(Path(os.environ["SystemRoot"]) / "System32")
+    else:
+        env.update(BOT_SERVER=base, BOT_SLEEP="0.1", BOT_JITTER="0")
     if profile is not None: env["BOT_PROFILE"] = profile
     if config is not None: env["BOT_CONFIG"] = str(config)
     process = subprocess.Popen([str(exe)], cwd=directory, env=env, stdout=subprocess.PIPE,
@@ -102,18 +112,23 @@ def launch_case(exe, base, directory, profile=None, config=None, expected=None):
             process.kill(); process.wait(timeout=5)
 
 
-def main():
+def main(default_port=False):
     source = ROOT / "clients/rustclr-loader/dist/Loader.exe"
     with tempfile.TemporaryDirectory(prefix="botyara-loader-") as temporary:
         directory = Path(temporary)
         with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]
+            if default_port:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            sock.bind(("127.0.0.1", 5000 if default_port else 0))
+            port = sock.getsockname()[1]
         base = "http://127.0.0.1:" + str(port)
         env = os.environ.copy()
         env.update(BOT_PORT=str(port), BOT_DATABASE=str(directory / "server.db"))
         server = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--server"], cwd=directory, env=env,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         def ready():
+            if server.poll() is not None:
+                raise RuntimeError("Test server exited before becoming ready")
             try: return True if requests.get(base + "/ping", timeout=.5).ok else None
             except requests.RequestException: return None
         try:
@@ -123,6 +138,10 @@ def main():
             exe = clean / "Loader.exe"
             shutil.copy2(source, exe)
             assert list(clean.iterdir()) == [exe]
+            if default_port:
+                selected = launch_case(exe, base, clean, use_defaults=True)
+                print("PASS one-file launch with no BOT_* variables, server defaults, and system PATH:", selected)
+                return
             verify.CLIENTS["dotnet"] = [str(exe)]
             configs = directory / "configs"; configs.mkdir()
             for profile in ("standard", "mixed", "host", "custom"):
@@ -184,4 +203,4 @@ def main():
 
 
 if __name__ == "__main__":
-    serve() if "--server" in sys.argv else main()
+    serve() if "--server" in sys.argv else main(default_port="--default-port" in sys.argv)
