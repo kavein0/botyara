@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}botyara{% endblock %}</title>
+    <link rel="icon" href="{{ url_for('favicon') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header class="topbar">
+        <nav class="topbar-inner" aria-label="Основная навигация">
+            <a class="brand" href="{{ url_for('index') }}">botyara</a>
+        </nav>
+    </header>
+    <main class="app-content">
+    {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

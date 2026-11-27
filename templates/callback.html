@@ -1,0 +1,151 @@
+{% extends 'base.html' %}
+{% from 'session_fields.html' import icon, session_status, profile_label, utc_time %}
+{% block title %}Сессия #{{ callback.id }} · botyara{% endblock %}
+{% block content %}
+    <nav class="session-back" aria-label="Навигация"><a href="{{ url_for('index', _anchor='callbacks') }}">{{ icon('back') }} Все сессии</a></nav>
+    <header class="page-header session-header surface-in">
+        <div>
+            <h1>Сессия #{{ callback.id }}</h1>
+            <div class="session-badges">{{ session_status(callback.state) }} {{ profile_label(profile_name) }}</div>
+        </div>
+        <div class="session-actions">
+            {% if callback.state == 'на связи' %}
+            <a class="button" href="#new-task">Новая задача</a>
+            {% endif %}
+            <a class="button button-secondary" href="{{ url_for('callback_details', callback_uuid=callback.uuid) }}">{{ icon('refresh') }} Обновить</a>
+        </div>
+    </header>
+
+    <div id="new-task" class="task-area surface-in">
+        {% for category, message in get_flashed_messages(with_categories=true) %}
+        <p class="notice notice-{{ category }}" role="status">{{ message }}</p>
+        {% endfor %}
+        {% if callback.state == 'на связи' %}
+        <section class="task-panel" aria-labelledby="new-task-heading">
+            <h2 id="new-task-heading">Новая задача</h2>
+            <form class="task-form" action="{{ url_for('ui_task') }}" method="post">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <input type="hidden" name="callback_uuid" value="{{ callback.uuid }}">
+                <label for="task-command">Команда</label>
+                <select id="task-command" name="command">
+                    {% for item in ('whoami', 'ip', 'exit') %}
+                    <option value="{{ item }}">{{ item }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit">Отправить</button>
+            </form>
+        </section>
+        {% endif %}
+    </div>
+
+    <div class="session-grid surface-in">
+        <section aria-labelledby="details-heading">
+            <h2 id="details-heading">Данные сессии</h2>
+            <dl class="session-meta">
+                <dt>Callback UUID</dt>
+                <dd><code>{{ callback.uuid }}</code></dd>
+                <dt>Payload UUID</dt>
+                <dd><code>{{ callback.payload_uuid }}</code></dd>
+                <dt>Начало сессии</dt>
+                <dd>{{ utc_time(callback.created_at) }} UTC</dd>
+                <dt>Последняя связь</dt>
+                <dd>{{ utc_time(callback.last_seen) }}{% if callback.last_seen %} UTC{% endif %}</dd>
+            </dl>
+        </section>
+
+        <section aria-labelledby="profile-heading">
+            <h2 id="profile-heading">Правила профиля</h2>
+            <div class="table-wrap">
+                <table class="session-table profile-rules">
+                    <thead><tr>
+                        <th scope="col">Маршрут</th>
+                        <th scope="col">Метод</th>
+                        <th scope="col">Передача</th>
+                        <th scope="col">Поле</th>
+                    </tr></thead>
+                    <tbody>
+                    {% for operation, route in [('checkin', '/checkin'), ('get_task', '/poll'), ('post_task', '/results')] %}
+                    {% set rule = profile[operation] %}
+                    <tr>
+                        <td data-label="Маршрут"><code>{{ route }}</code></td>
+                        <td data-label="Метод"><code>{{ rule.method }}</code></td>
+                        <td data-label="Передача"><code>{{ rule.transport }}</code></td>
+                        <td data-label="Поле"><code>{{ rule.field }}</code></td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <section class="surface-in" aria-labelledby="history-heading">
+        <h2 id="history-heading">История задач</h2>
+        {% set names = {'pending': 'в ожидании', 'sent': 'выдана', 'completed': 'выполнено'} %}
+        <div class="table-wrap">
+            <table class="session-table session-history">
+                <thead><tr>
+                    <th scope="col">ID</th>
+                    <th scope="col">Команда</th>
+                    <th scope="col">Создана (UTC)</th>
+                    <th scope="col">Статус</th>
+                    <th scope="col">Результат</th>
+                </tr></thead>
+                <tbody>
+                {% for task in tasks %}
+                <tr>
+                    <td data-label="ID">#{{ task.id }}</td>
+                    <td data-label="Команда"><code>{{ task.command }}</code></td>
+                    <td data-label="Создана (UTC)">{{ utc_time(task.created_at) }}</td>
+                    <td data-label="Статус"><span class="status {{ 'good' if task.status == 'completed' else 'waiting' }}">{{ names[task.status] }}</span></td>
+                    <td data-label="Результат">
+                        {% if task.result is not none %}
+                        <details class="session-result">
+                            <summary>
+                                {{ icon('chevron') }}
+                                <span class="result-closed">Показать ответ</span>
+                                <span class="result-open">Скрыть ответ</span>
+                            </summary>
+                            <pre>{{ task.result }}</pre>
+                        </details>
+                        {% else %}
+                        <span class="empty-value">—</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr class="empty-row"><td colspan="5">У этой сессии пока нет задач.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section aria-labelledby="related-heading">
+        <h2 id="related-heading">Другие запуски той же регистрации</h2>
+        {% if related %}
+        <div class="table-wrap">
+            <table class="session-table related-sessions">
+                <thead><tr>
+                    <th scope="col">Сессия</th>
+                    <th scope="col">Callback UUID</th>
+                    <th scope="col">Начало (UTC)</th>
+                    <th scope="col">Состояние</th>
+                </tr></thead>
+                <tbody>
+                {% for item in related %}
+                <tr>
+                    <td data-label="Сессия"><a class="session-link" href="{{ url_for('callback_details', callback_uuid=item.uuid) }}">Сессия #{{ item.id }}</a></td>
+                    <td data-label="Callback UUID"><code>{{ item.uuid }}</code></td>
+                    <td data-label="Начало (UTC)">{{ utc_time(item.created_at) }}</td>
+                    <td data-label="Состояние">{{ session_status(item.state) }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="session-empty">У этой регистрации пока один запуск.</p>
+        {% endif %}
+    </section>
+{% endblock %}

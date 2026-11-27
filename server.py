@@ -4,7 +4,11 @@ from secrets import compare_digest, token_hex
 from uuid import uuid4
 from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import HTTPException
-from database import create_callback, create_payload, create_task, get_callback_id, get_next_task, get_payload, get_callback_payload_id, get_state, init_db, poll_task, save_result
+from database import (
+    create_callback, create_payload, create_task, get_callback_details,
+    get_callback_id, get_callback_list, get_callback_payload_id, get_next_task, get_payload,
+    get_state, init_db, poll_task, save_result,
+)
 import time
 from profiles import (
     PROFILES, validate_profile,
@@ -241,13 +245,28 @@ def state():
     return get_state()
 
 
+def profile_name(profile):
+    return next((name for name, rules in PROFILES.items() if rules == profile), "custom")
+
+
 @app.get("/")
 def index():
+    callbacks = get_callback_list()
+    callbacks.sort(key=lambda callback: callback["state"] != "на связи")
+    for callback in callbacks:
+        callback["profile_name"] = profile_name(callback.pop("profile"))
+    return render_template("index.html", callbacks=callbacks)
+
+
+@app.get("/ui/callbacks/<uuid:callback_uuid>")
+def callback_details(callback_uuid):
+    details = get_callback_details(str(callback_uuid))
+    if details is None:
+        abort(404, "Сессия не найдена")
     if "csrf" not in session:
         session["csrf"] = token_hex(24)
     return render_template(
-        "index.html", **get_state(), csrf=session["csrf"],
-        selected=request.args.get("callback"), command=request.args.get("command", "whoami")
+        "callback.html", **details, profile_name=profile_name(details["profile"]), csrf=session["csrf"]
     )
 
 
@@ -257,10 +276,14 @@ def ui_task():
     if not token.isascii() or not session.get("csrf") or not compare_digest(token, session["csrf"]):
         return "Обнови страницу и попробуй ещё раз", 403
     data, status = add_task_data(request.form)
-    flash(data["error"] if status != 201 else f"Задача №{data['task_id']} добавлена")
-    return redirect(url_for(
-        "index", callback=request.form.get("callback_uuid"), command=request.form.get("command")
-    ), code=303)
+    callback_uuid = request.form.get("callback_uuid")
+    if status == 201:
+        flash(f"Задача №{data['task_id']} добавлена в очередь", "success")
+    else:
+        flash(data["error"], "error")
+    if status == 201 or (callback_uuid and get_callback_id(callback_uuid) is not None):
+        return redirect(url_for("callback_details", callback_uuid=callback_uuid, _anchor="new-task"), code=303)
+    return redirect(url_for("index"), code=303)
 
 
 @app.after_request

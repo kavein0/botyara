@@ -1,0 +1,27 @@
+{% macro icon(name) -%}
+<svg class="icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    {%- if name == 'refresh' -%}
+    <path d="M20 7v5h-5m-11 5v-5h5"/><path d="M5.4 8a7 7 0 0 1 11-1.8L20 12M4 12l3.6 5.8a7 7 0 0 0 11-1.8"/>
+    {%- elif name == 'back' -%}
+    <path d="m10 6-6 6 6 6M4 12h15"/>
+    {%- elif name == 'chevron' -%}
+    <path d="m9 6 6 6-6 6"/>
+    {%- endif -%}
+</svg>
+{%- endmacro %}
+
+{% macro session_status(state) -%}
+<span class="status {{ {'на связи': 'good', 'нет связи': 'waiting', 'вышел': 'muted'}[state] }}">{{ state }}</span>
+{%- endmacro %}
+
+{% macro profile_label(name) -%}
+<code class="profile-label">{{ name }}</code>
+{%- endmacro %}
+
+{% macro utc_time(value) -%}
+{%- if value -%}
+<time datetime="{{ value|replace(' ', 'T') }}Z">{{ value }}</time>
+{%- else -%}
+<span class="empty-value">—</span>
+{%- endif -%}
+{%- endmacro %}

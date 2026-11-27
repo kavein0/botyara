@@ -7,6 +7,14 @@ from profiles import STANDARD_PROFILE, validate_profile
 
 DATABASE = os.environ.get("BOT_DATABASE", str(Path(__file__).with_name("server.db")))
 PAYLOAD_UUID = "550e8400-e29b-41d4-a716-446655440000"
+CALLBACK_STATE_SQL = """
+    CASE
+        WHEN c.stopped = 1 THEN 'вышел'
+        WHEN (julianday('now') - julianday(c.last_seen)) * 86400 < 15
+            THEN 'на связи'
+        ELSE 'нет связи'
+    END
+"""
 
 
 def connect():
@@ -206,14 +214,8 @@ def get_state():
     with closing(connect()) as db, db:
         db.row_factory = sqlite3.Row
         payloads = db.execute("SELECT id, uuid, profile FROM payloads ORDER BY id").fetchall()
-        callbacks = db.execute("""
-            SELECT c.*, p.uuid AS payload_uuid,
-                CASE
-                    WHEN c.stopped = 1 THEN 'вышел'
-                    WHEN (julianday('now') - julianday(c.last_seen)) * 86400 < 15
-                        THEN 'на связи'
-                    ELSE 'нет связи'
-                END AS state
+        callbacks = db.execute(f"""
+            SELECT c.*, p.uuid AS payload_uuid, {CALLBACK_STATE_SQL} AS state
             FROM callbacks c JOIN payloads p ON p.id = c.payload_id
             ORDER BY c.id DESC
         """).fetchall()
@@ -227,6 +229,51 @@ def get_state():
                       "profile": json.loads(row["profile"])} for row in payloads],
         "callbacks": [dict(row) for row in callbacks],
         "tasks": [dict(row) for row in tasks]
+    }
+
+
+def get_callback_list():
+    with closing(connect()) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(f"""
+            SELECT c.id, c.uuid, c.last_seen, p.uuid AS payload_uuid,
+                   p.profile, {CALLBACK_STATE_SQL} AS state
+            FROM callbacks c JOIN payloads p ON p.id = c.payload_id
+            ORDER BY c.id DESC
+        """).fetchall()
+    return [{**dict(row), "profile": json.loads(row["profile"])} for row in rows]
+
+
+def get_callback_details(callback_uuid):
+    with closing(connect()) as db, db:
+        db.row_factory = sqlite3.Row
+        db.execute("BEGIN")
+        row = db.execute(f"""
+            SELECT c.*, p.uuid AS payload_uuid, p.profile, {CALLBACK_STATE_SQL} AS state
+            FROM callbacks c JOIN payloads p ON p.id = c.payload_id
+            WHERE c.uuid = ?
+        """, (callback_uuid,)).fetchone()
+        if row is None:
+            return None
+        tasks = db.execute("""
+            SELECT id, command, status, result, created_at
+            FROM tasks
+            WHERE callback_id = ?
+            ORDER BY id DESC
+        """, (row["id"],)).fetchall()
+        related = db.execute(f"""
+            SELECT c.id, c.uuid, c.created_at, {CALLBACK_STATE_SQL} AS state
+            FROM callbacks c
+            WHERE c.payload_id = ? AND c.id != ?
+            ORDER BY c.id DESC
+        """, (row["payload_id"], row["id"])).fetchall()
+    callback = dict(row)
+    profile = json.loads(callback.pop("profile"))
+    return {
+        "callback": callback,
+        "profile": profile,
+        "tasks": [dict(task) for task in tasks],
+        "related": [dict(item) for item in related],
     }
 
 
